@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src 'nonce-{{NONCE}}';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="panel-title" content="SF Translations Manager" />
+    <title>{{PANEL_TITLE}}</title>
+    <link rel="stylesheet" href="{{STYLE_URI}}" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="titleBlock">
+        <h1>Translations</h1>
+        <p id="summary" class="summary">Loading translations...</p>
+      </div>
+
+      <div class="toolbarActions">
+        <input
+          id="searchInput"
+          class="searchInput"
+          type="search"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Search keys or values"
+          aria-label="Search keys or values"
+        />
+        <button id="openSettingsButton" class="secondaryButton" type="button">
+          Settings
+        </button>
+        <button id="saveAllButton" class="primaryButton" type="button" disabled>
+          Save all
+        </button>
+      </div>
+    </header>
+
+    <div id="status" class="status" role="status"></div>
+    <main id="tableHost" class="tableHost">
+      <div class="emptyState">Loading translations...</div>
+    </main>
+
+    <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+  </body>
+</html>

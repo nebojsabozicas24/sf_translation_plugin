@@ -1,0 +1,57 @@
+{
+  "name": "sf-translations-manager",
+  "displayName": "SF Translations Manager",
+  "description": "Browse and edit generated translation JSON files from one VS Code panel.",
+  "version": "0.0.1",
+  "publisher": "as24",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:sfTranslationsManager.open",
+    "onCommand:sfTranslationsManager.openSettings"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sfTranslationsManager.open",
+        "title": "Open",
+        "category": "SF Translations Manager"
+      },
+      {
+        "command": "sfTranslationsManager.openSettings",
+        "title": "Open Settings",
+        "category": "SF Translations Manager"
+      }
+    ],
+    "configuration": {
+      "title": "SF Translations Manager",
+      "properties": {
+        "sfTranslationsManager.translationsLocation": {
+          "type": "string",
+          "default": "**/__generated__/translations*.json",
+          "description": "Glob pattern used to find translation JSON files in the current workspace."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.110.0",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "dist",
+    "webview",
+    "README.md"
+  ]
+}
