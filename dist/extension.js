@@ -8,12 +8,7 @@ const DEFAULT_TRANSLATIONS_GLOB = '**/__generated__/translations*.json';
 const DEFAULT_PANEL_TITLE = 'SF Translations Manager';
 function activate(context) {
     const openCommand = vscode.commands.registerCommand('sfTranslationsManager.open', async () => {
-        const files = await findTranslationFiles();
-        if (files.length === 0) {
-            vscode.window.showWarningMessage(`No translation files found for pattern: ${getTranslationsGlob()}`);
-            return;
-        }
-        await openTranslationPanel(context, files);
+        await openTranslationPanel(context);
     });
     const openSettingsCommand = vscode.commands.registerCommand('sfTranslationsManager.openSettings', () => {
         void openExtensionSettings();
@@ -30,7 +25,7 @@ async function findTranslationFiles() {
     const files = await vscode.workspace.findFiles(getTranslationsGlob());
     return files.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
 }
-async function openTranslationPanel(context, files) {
+async function openTranslationPanel(context) {
     const webviewRoot = vscode.Uri.joinPath(context.extensionUri, 'webview');
     const panelTitle = await getPanelTitleFromHtml(webviewRoot);
     const panel = vscode.window.createWebviewPanel('sfTranslationsManager', panelTitle, vscode.ViewColumn.One, {
@@ -38,8 +33,9 @@ async function openTranslationPanel(context, files) {
         retainContextWhenHidden: true,
         localResourceRoots: [webviewRoot],
     });
-    const snapshot = await loadTranslations(files);
-    const validFilePaths = new Set(files.map((uri) => uri.fsPath));
+    let snapshot;
+    let validFilePaths = new Set();
+    let loadState;
     const enqueueSave = createSaveQueue();
     let didSendContent = false;
     let didReportPostMessageFailure = false;
@@ -52,16 +48,18 @@ async function openTranslationPanel(context, files) {
         vscode.window.showErrorMessage('Failed to send translations to the webview. The payload may be too large.');
     };
     const sendContent = async () => {
-        if (didSendContent) {
+        if (didSendContent || !snapshot) {
             return;
         }
+        const postStartedAt = Date.now();
         try {
             const sent = await panel.webview.postMessage({
                 type: 'content',
                 merged: snapshot.merged,
-                sourceFiles: snapshot.sourceFiles,
-                localeToFile: snapshot.localeToFile,
-                keyToFile: snapshot.keyToFile,
+                files: snapshot.files,
+                sourceFileIds: snapshot.sourceFileIds,
+                localeFileIds: snapshot.localeFileIds,
+                keyFileIds: snapshot.keyFileIds,
             });
             if (!sent) {
                 throw new Error('Webview rejected the content message.');
@@ -83,13 +81,29 @@ async function openTranslationPanel(context, files) {
             }
         }
         didSendContent = true;
+        console.log(`SF Translations Manager: posted translations to webview in ${Date.now() - postStartedAt}ms.`);
+    };
+    const sendLoadState = async () => {
+        if (!loadState) {
+            return;
+        }
+        await panel.webview.postMessage(loadState);
     };
     panel.webview.onDidReceiveMessage(async (message) => {
         switch (message.type) {
             case 'ready':
-                void sendContent();
+                if (snapshot) {
+                    void sendContent();
+                }
+                else {
+                    void sendLoadState();
+                }
                 break;
             case 'save':
+                if (!snapshot) {
+                    await postSaveError(panel.webview, message.requestId, 'Translations are still loading.');
+                    break;
+                }
                 await handleSaveMessage(message, panel.webview, snapshot, validFilePaths, enqueueSave);
                 break;
             case 'openSettings':
@@ -98,9 +112,36 @@ async function openTranslationPanel(context, files) {
         }
     }, undefined, context.subscriptions);
     panel.webview.html = await getWebviewHtml(panel.webview, webviewRoot);
+    void loadAndSendTranslations();
+    async function loadAndSendTranslations() {
+        try {
+            const findStartedAt = Date.now();
+            const files = await findTranslationFiles();
+            console.log(`SF Translations Manager: found ${files.length} files in ${Date.now() - findStartedAt}ms.`);
+            if (files.length === 0) {
+                const message = `No translation files found for pattern: ${getTranslationsGlob()}`;
+                loadState = { type: 'empty', message };
+                vscode.window.showWarningMessage(message);
+                await sendLoadState();
+                return;
+            }
+            const loadStartedAt = Date.now();
+            snapshot = await loadTranslations(files);
+            validFilePaths = new Set(files.map((uri) => uri.fsPath));
+            console.log(`SF Translations Manager: loaded ${snapshot.files.length} files, ${countKeys(snapshot.merged)} keys, ${Object.keys(snapshot.merged).length} locales in ${Date.now() - loadStartedAt}ms.`);
+            await sendContent();
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to load translations.';
+            loadState = { type: 'loadError', message };
+            console.error('SF Translations Manager: failed to load translations.', error);
+            vscode.window.showErrorMessage(message);
+            await sendLoadState();
+        }
+    }
 }
 async function handleSaveMessage(message, webview, snapshot, validFilePaths, enqueueSave) {
-    if (!isString(message.filePath) ||
+    if (!isSafeFileId(message.fileId) ||
         !isString(message.locale) ||
         !isString(message.key) ||
         !isString(message.value)) {
@@ -108,17 +149,18 @@ async function handleSaveMessage(message, webview, snapshot, validFilePaths, enq
         return;
     }
     const saveRequest = {
-        filePath: message.filePath,
+        fileId: message.fileId,
         locale: message.locale,
         key: message.key,
         value: message.value,
     };
-    const sourceFile = resolveSourceFile(snapshot, saveRequest.locale, saveRequest.key);
-    if (!sourceFile) {
+    const sourceFileId = resolveSourceFileId(snapshot, saveRequest.locale, saveRequest.key);
+    const sourceFile = sourceFileId === undefined ? undefined : snapshot.files[sourceFileId];
+    if (sourceFileId === undefined || !sourceFile) {
         await postSaveError(webview, message.requestId, `No source file found for ${saveRequest.locale}: ${saveRequest.key}.`);
         return;
     }
-    if (saveRequest.filePath !== sourceFile || !validFilePaths.has(sourceFile)) {
+    if (saveRequest.fileId !== sourceFileId || !validFilePaths.has(sourceFile)) {
         await postSaveError(webview, message.requestId, 'Invalid source file for this translation.');
         return;
     }
@@ -129,7 +171,7 @@ async function handleSaveMessage(message, webview, snapshot, validFilePaths, enq
             key: saveRequest.key,
             value: saveRequest.value,
         }));
-        setSourceFile(snapshot, saveRequest.locale, saveRequest.key, sourceFile);
+        setSourceFileId(snapshot, saveRequest.locale, saveRequest.key, sourceFileId);
         if (!snapshot.merged[saveRequest.locale]) {
             snapshot.merged[saveRequest.locale] = {};
         }
@@ -137,7 +179,7 @@ async function handleSaveMessage(message, webview, snapshot, validFilePaths, enq
         await webview.postMessage({
             type: 'saved',
             requestId: message.requestId,
-            filePath: sourceFile,
+            fileId: sourceFileId,
             locale: saveRequest.locale,
             key: saveRequest.key,
             value: saveRequest.value,
@@ -168,10 +210,11 @@ async function saveTranslationValue({ filePath, locale, key, value, }) {
 }
 async function loadTranslations(files) {
     const merged = {};
-    const sourceFiles = {};
-    const localeToFile = {};
-    const keyToFile = {};
-    for (const uri of files) {
+    const filePaths = files.map((uri) => uri.fsPath);
+    const sourceFileIds = {};
+    const localeFileIds = {};
+    const keyFileIds = {};
+    for (const [fileId, uri] of files.entries()) {
         const content = await readFileOrSkip(uri);
         if (content === undefined) {
             continue;
@@ -187,33 +230,42 @@ async function loadTranslations(files) {
             if (!merged[locale]) {
                 merged[locale] = {};
             }
-            if (!sourceFiles[locale]) {
-                sourceFiles[locale] = {};
+            if (!sourceFileIds[locale]) {
+                sourceFileIds[locale] = {};
             }
             for (const [key, value] of Object.entries(keys)) {
                 if (typeof value === 'string') {
                     merged[locale][key] = value;
-                    sourceFiles[locale][key] = uri.fsPath;
-                    localeToFile[locale] = uri.fsPath;
-                    keyToFile[key] = uri.fsPath;
+                    sourceFileIds[locale][key] = fileId;
+                    localeFileIds[locale] = fileId;
+                    keyFileIds[key] = fileId;
                 }
             }
         }
     }
-    return { merged, sourceFiles, localeToFile, keyToFile };
+    return { merged, files: filePaths, sourceFileIds, localeFileIds, keyFileIds };
 }
-function resolveSourceFile(snapshot, locale, key) {
-    return (snapshot.sourceFiles[locale]?.[key] ??
-        snapshot.localeToFile[locale] ??
-        snapshot.keyToFile[key]);
+function resolveSourceFileId(snapshot, locale, key) {
+    return (snapshot.sourceFileIds[locale]?.[key] ??
+        snapshot.localeFileIds[locale] ??
+        snapshot.keyFileIds[key]);
 }
-function setSourceFile(snapshot, locale, key, filePath) {
-    if (!snapshot.sourceFiles[locale]) {
-        snapshot.sourceFiles[locale] = {};
+function setSourceFileId(snapshot, locale, key, fileId) {
+    if (!snapshot.sourceFileIds[locale]) {
+        snapshot.sourceFileIds[locale] = {};
     }
-    snapshot.sourceFiles[locale][key] = filePath;
-    snapshot.localeToFile[locale] = filePath;
-    snapshot.keyToFile[key] = filePath;
+    snapshot.sourceFileIds[locale][key] = fileId;
+    snapshot.localeFileIds[locale] = fileId;
+    snapshot.keyFileIds[key] = fileId;
+}
+function countKeys(translations) {
+    const keys = new Set();
+    for (const localeTranslations of Object.values(translations)) {
+        for (const key of Object.keys(localeTranslations)) {
+            keys.add(key);
+        }
+    }
+    return keys.size;
 }
 function createSaveQueue() {
     let queue = Promise.resolve();
@@ -272,11 +324,13 @@ async function getPanelTitleFromHtml(webviewRoot) {
 async function getWebviewHtml(webview, webviewRoot) {
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, 'style.css'));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, 'script.js'));
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, 'search-funnel-logo.png'));
     const nonce = createNonce();
     let html = await readTranslationFile(vscode.Uri.joinPath(webviewRoot, 'index.html'));
     html = html
         .replace(/\{\{CSP_SOURCE\}\}/g, webview.cspSource)
         .replace(/\{\{NONCE\}\}/g, nonce)
+        .replace(/\{\{LOGO_URI\}\}/g, logoUri.toString())
         .replace(/\{\{STYLE_URI\}\}/g, styleUri.toString())
         .replace(/\{\{SCRIPT_URI\}\}/g, scriptUri.toString())
         .replace(/\{\{PANEL_TITLE\}\}/g, escapeHtml(DEFAULT_PANEL_TITLE));
@@ -305,6 +359,9 @@ function escapeHtml(value) {
 }
 function isString(value) {
     return typeof value === 'string';
+}
+function isSafeFileId(value) {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

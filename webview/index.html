@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src 'nonce-{{NONCE}}';"
+      content="default-src 'none'; img-src {{CSP_SOURCE}}; style-src {{CSP_SOURCE}}; script-src 'nonce-{{NONCE}}';"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="panel-title" content="SF Translations Manager" />
@@ -14,8 +14,11 @@
   <body>
     <header class="toolbar">
       <div class="titleBlock">
-        <h1>Translations</h1>
-        <p id="summary" class="summary">Loading translations...</p>
+        <img class="appLogo" src="{{LOGO_URI}}" alt="" />
+        <div class="titleText">
+          <h1>SearchFunnel Translations</h1>
+          <p id="summary" class="summary">Loading translations...</p>
+        </div>
       </div>
 
       <div class="toolbarActions">
@@ -28,6 +31,24 @@
           placeholder="Search keys or values"
           aria-label="Search keys or values"
         />
+        <div class="localeFilter">
+          <button
+            id="localeFilterButton"
+            class="secondaryButton localeFilterButton"
+            type="button"
+            aria-haspopup="true"
+            aria-expanded="false"
+            disabled
+          >
+            Locales
+          </button>
+          <div id="localeFilterPanel" class="localeFilterPanel" hidden>
+            <div id="localeFilterList" class="localeFilterList"></div>
+          </div>
+        </div>
+        <button id="collapseAllButton" class="secondaryButton" type="button" disabled>
+          Collapse all
+        </button>
         <button id="openSettingsButton" class="secondaryButton" type="button">
           Settings
         </button>

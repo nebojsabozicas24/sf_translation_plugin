@@ -9,6 +9,9 @@ The extension scans the current workspace for translation files, merges all loca
 - Opens a dedicated **SF Translations Manager** panel in VS Code.
 - Finds translation files with a configurable glob pattern.
 - Merges translations by locale and key.
+- Displays dot-separated keys as a collapsible hierarchy.
+- Lets users temporarily choose which locale columns are visible.
+- Virtualizes the table so large translation sets only render visible rows.
 - Saves edited translation values back to the source JSON file for each locale/key cell.
 - Provides a shortcut command for opening the extension settings.
 
@@ -30,6 +33,14 @@ Translation files should be JSON objects grouped by locale. Each locale contains
 ```
 
 Only string values are loaded into the manager. Nested objects, arrays, numbers, booleans, and null values are ignored.
+
+Dot-separated keys are displayed as a tree in the UI. The JSON key stays flat on disk; for example, `checkout.address.title` is only presented as:
+
+```text
+checkout
+  address
+    title
+```
 
 ## Default File Lookup
 
@@ -92,6 +103,14 @@ When files are loaded, the extension tracks which JSON file each locale/key valu
 5. Writes the file back as formatted JSON.
 
 If a locale/key value already exists in multiple files, the last file found by sorted path order owns that exact cell in the manager. For a missing value, the manager saves to the known file for that locale first, then falls back to the known file for that key.
+
+The webview receives source-file references as numeric file IDs instead of repeated file paths. This keeps the payload smaller while preserving per-locale/key ownership checks.
+
+## Performance Notes
+
+The extension logs timing information to the extension host and webview developer consoles for file lookup, translation loading, message transfer, indexing, and rendering.
+
+The table uses fixed-height virtual rows. This keeps the DOM small even when the workspace contains thousands of keys across many locales.
 
 ## Expected Extension Assets
 

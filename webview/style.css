@@ -2,12 +2,20 @@
   color-scheme: light dark;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
+  display: flex;
+  flex-direction: column;
   margin: 0;
+  overflow: hidden;
   color: var(--vscode-editor-foreground);
   background: var(--vscode-editor-background);
   font-family: var(--vscode-font-family);
@@ -21,21 +29,37 @@ textarea {
 }
 
 .toolbar {
-  position: sticky;
-  top: 0;
   z-index: 4;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 68px;
+  min-height: 76px;
   padding: 12px 16px;
   background: var(--vscode-editor-background);
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
 .titleBlock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 180px;
+}
+
+.appLogo {
+  display: block;
+  width: 84px;
+  height: 60px;
+  object-fit: cover;
+  background: #fff;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+}
+
+.titleText {
+  min-width: 0;
 }
 
 h1 {
@@ -76,6 +100,46 @@ h1 {
   outline-offset: -1px;
 }
 
+.localeFilter {
+  position: relative;
+}
+
+.localeFilterButton {
+  min-width: 104px;
+}
+
+.localeFilterPanel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  width: 240px;
+  max-height: min(360px, 60vh);
+  overflow: auto;
+  padding: 6px;
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 35%);
+}
+
+.localeFilterOption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.localeFilterOption:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.localeFilterOption input {
+  margin: 0;
+}
+
 .primaryButton,
 .secondaryButton {
   height: 30px;
@@ -109,6 +173,7 @@ h1 {
 }
 
 .status {
+  flex: 0 0 auto;
   min-height: 28px;
   padding: 7px 16px;
   color: var(--vscode-descriptionForeground);
@@ -131,7 +196,9 @@ h1 {
 }
 
 .tableHost {
+  flex: 1 1 auto;
   width: 100%;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -150,7 +217,7 @@ h1 {
 .translationsTable td {
   border-right: 1px solid var(--vscode-panel-border);
   border-bottom: 1px solid var(--vscode-panel-border);
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .translationsTable th {
@@ -181,21 +248,13 @@ h1 {
   background: var(--vscode-sideBar-background);
 }
 
-.fileColumn,
-.fileCell {
-  width: 190px;
-  min-width: 190px;
-  max-width: 190px;
-}
-
 .localeColumn {
   width: 320px;
   min-width: 320px;
 }
 
-.keyCell,
-.fileCell {
-  padding: 8px;
+.keyCell {
+  padding: 2px 8px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -205,16 +264,75 @@ h1 {
   font-size: 12px;
 }
 
-.fileCell {
+.translationKeyCell,
+.groupKeyCell {
+  padding-left: calc(8px + var(--tree-indent, 0px));
+}
+
+.treeLabel {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: middle;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groupKeyCell .treeLabel {
+  max-width: calc(100% - 32px);
+}
+
+.treeToggle {
+  width: 16px;
+  height: 16px;
+  margin: 0 6px 0 0;
+  padding: 0;
+  color: var(--vscode-foreground);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  line-height: 12px;
+}
+
+.treeToggle:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.groupRow {
+  cursor: pointer;
+  background: var(--vscode-sideBar-background);
+}
+
+.groupRow:hover td {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.groupKeyCell {
+  font-weight: 600;
+  color: var(--vscode-sideBarTitle-foreground);
+  background: var(--vscode-sideBar-background);
+}
+
+.groupDetailsCell {
+  padding: 2px 8px;
   color: var(--vscode-descriptionForeground);
+  background: var(--vscode-sideBar-background);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spacerRow td {
+  padding: 0;
+  border: 0;
 }
 
 .translationInput {
   display: block;
   width: 320px;
-  min-height: 54px;
-  padding: 7px 8px;
-  resize: vertical;
+  height: 22px;
+  padding: 2px 6px;
+  resize: none;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid transparent;

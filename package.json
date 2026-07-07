@@ -2,9 +2,14 @@
   "name": "sf-translations-manager",
   "displayName": "SF Translations Manager",
   "description": "Browse and edit generated translation JSON files from one VS Code panel.",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "publisher": "as24",
   "private": true,
+  "author": {
+    "name": "Nebojša Božić",
+    "email": "nebojsa.bozic@autoscout24.com"
+  },
+  "icon": "webview/search-funnel-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },

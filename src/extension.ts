@@ -2,15 +2,17 @@
 import * as vscode from 'vscode';
 
 type TranslationsByLocale = Record<string, Record<string, string>>;
-type KeyToFileMap = Record<string, string>;
-type LocaleToFileMap = Record<string, string>;
-type SourceFilesByLocale = Record<string, Record<string, string>>;
+type FileId = number;
+type KeyToFileIdMap = Record<string, FileId>;
+type LocaleToFileIdMap = Record<string, FileId>;
+type SourceFileIdsByLocale = Record<string, Record<string, FileId>>;
 
 interface TranslationSnapshot {
   merged: TranslationsByLocale;
-  sourceFiles: SourceFilesByLocale;
-  localeToFile: LocaleToFileMap;
-  keyToFile: KeyToFileMap;
+  files: string[];
+  sourceFileIds: SourceFileIdsByLocale;
+  localeFileIds: LocaleToFileIdMap;
+  keyFileIds: KeyToFileIdMap;
 }
 
 type SaveOperationQueue = (operation: () => Promise<void>) => Promise<void>;
@@ -20,7 +22,7 @@ type WebviewMessage =
   | { type: 'openSettings' }
   | {
       type: 'save';
-      filePath?: unknown;
+      fileId?: unknown;
       locale?: unknown;
       key?: unknown;
       value?: unknown;
@@ -34,16 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const openCommand = vscode.commands.registerCommand(
     'sfTranslationsManager.open',
     async () => {
-      const files = await findTranslationFiles();
-
-      if (files.length === 0) {
-        vscode.window.showWarningMessage(
-          `No translation files found for pattern: ${getTranslationsGlob()}`,
-        );
-        return;
-      }
-
-      await openTranslationPanel(context, files);
+      await openTranslationPanel(context);
     },
   );
 
@@ -74,7 +67,6 @@ async function findTranslationFiles(): Promise<vscode.Uri[]> {
 
 async function openTranslationPanel(
   context: vscode.ExtensionContext,
-  files: vscode.Uri[],
 ): Promise<void> {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, 'webview');
   const panelTitle = await getPanelTitleFromHtml(webviewRoot);
@@ -90,8 +82,9 @@ async function openTranslationPanel(
     },
   );
 
-  const snapshot = await loadTranslations(files);
-  const validFilePaths = new Set(files.map((uri) => uri.fsPath));
+  let snapshot: TranslationSnapshot | undefined;
+  let validFilePaths: ReadonlySet<string> = new Set();
+  let loadState: { type: 'empty' | 'loadError'; message: string } | undefined;
   const enqueueSave = createSaveQueue();
   let didSendContent = false;
   let didReportPostMessageFailure = false;
@@ -113,17 +106,20 @@ async function openTranslationPanel(
   };
 
   const sendContent = async (): Promise<void> => {
-    if (didSendContent) {
+    if (didSendContent || !snapshot) {
       return;
     }
+
+    const postStartedAt = Date.now();
 
     try {
       const sent = await panel.webview.postMessage({
         type: 'content',
         merged: snapshot.merged,
-        sourceFiles: snapshot.sourceFiles,
-        localeToFile: snapshot.localeToFile,
-        keyToFile: snapshot.keyToFile,
+        files: snapshot.files,
+        sourceFileIds: snapshot.sourceFileIds,
+        localeFileIds: snapshot.localeFileIds,
+        keyFileIds: snapshot.keyFileIds,
       });
 
       if (!sent) {
@@ -146,16 +142,42 @@ async function openTranslationPanel(
     }
 
     didSendContent = true;
+    console.log(
+      `SF Translations Manager: posted translations to webview in ${
+        Date.now() - postStartedAt
+      }ms.`,
+    );
+  };
+
+  const sendLoadState = async (): Promise<void> => {
+    if (!loadState) {
+      return;
+    }
+
+    await panel.webview.postMessage(loadState);
   };
 
   panel.webview.onDidReceiveMessage(
     async (message: WebviewMessage) => {
       switch (message.type) {
         case 'ready':
-          void sendContent();
+          if (snapshot) {
+            void sendContent();
+          } else {
+            void sendLoadState();
+          }
           break;
 
         case 'save':
+          if (!snapshot) {
+            await postSaveError(
+              panel.webview,
+              message.requestId,
+              'Translations are still loading.',
+            );
+            break;
+          }
+
           await handleSaveMessage(
             message,
             panel.webview,
@@ -175,6 +197,47 @@ async function openTranslationPanel(
   );
 
   panel.webview.html = await getWebviewHtml(panel.webview, webviewRoot);
+  void loadAndSendTranslations();
+
+  async function loadAndSendTranslations(): Promise<void> {
+    try {
+      const findStartedAt = Date.now();
+      const files = await findTranslationFiles();
+      console.log(
+        `SF Translations Manager: found ${files.length} files in ${
+          Date.now() - findStartedAt
+        }ms.`,
+      );
+
+      if (files.length === 0) {
+        const message = `No translation files found for pattern: ${getTranslationsGlob()}`;
+        loadState = { type: 'empty', message };
+        vscode.window.showWarningMessage(message);
+        await sendLoadState();
+        return;
+      }
+
+      const loadStartedAt = Date.now();
+      snapshot = await loadTranslations(files);
+      validFilePaths = new Set(files.map((uri) => uri.fsPath));
+      console.log(
+        `SF Translations Manager: loaded ${snapshot.files.length} files, ${countKeys(
+          snapshot.merged,
+        )} keys, ${Object.keys(snapshot.merged).length} locales in ${
+          Date.now() - loadStartedAt
+        }ms.`,
+      );
+
+      await sendContent();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to load translations.';
+      loadState = { type: 'loadError', message };
+      console.error('SF Translations Manager: failed to load translations.', error);
+      vscode.window.showErrorMessage(message);
+      await sendLoadState();
+    }
+  }
 }
 
 async function handleSaveMessage(
@@ -185,7 +248,7 @@ async function handleSaveMessage(
   enqueueSave: SaveOperationQueue,
 ): Promise<void> {
   if (
-    !isString(message.filePath) ||
+    !isSafeFileId(message.fileId) ||
     !isString(message.locale) ||
     !isString(message.key) ||
     !isString(message.value)
@@ -199,19 +262,20 @@ async function handleSaveMessage(
   }
 
   const saveRequest = {
-    filePath: message.filePath,
+    fileId: message.fileId,
     locale: message.locale,
     key: message.key,
     value: message.value,
   };
 
-  const sourceFile = resolveSourceFile(
+  const sourceFileId = resolveSourceFileId(
     snapshot,
     saveRequest.locale,
     saveRequest.key,
   );
+  const sourceFile = sourceFileId === undefined ? undefined : snapshot.files[sourceFileId];
 
-  if (!sourceFile) {
+  if (sourceFileId === undefined || !sourceFile) {
     await postSaveError(
       webview,
       message.requestId,
@@ -220,7 +284,7 @@ async function handleSaveMessage(
     return;
   }
 
-  if (saveRequest.filePath !== sourceFile || !validFilePaths.has(sourceFile)) {
+  if (saveRequest.fileId !== sourceFileId || !validFilePaths.has(sourceFile)) {
     await postSaveError(
       webview,
       message.requestId,
@@ -239,7 +303,7 @@ async function handleSaveMessage(
       }),
     );
 
-    setSourceFile(snapshot, saveRequest.locale, saveRequest.key, sourceFile);
+    setSourceFileId(snapshot, saveRequest.locale, saveRequest.key, sourceFileId);
 
     if (!snapshot.merged[saveRequest.locale]) {
       snapshot.merged[saveRequest.locale] = {};
@@ -250,7 +314,7 @@ async function handleSaveMessage(
     await webview.postMessage({
       type: 'saved',
       requestId: message.requestId,
-      filePath: sourceFile,
+      fileId: sourceFileId,
       locale: saveRequest.locale,
       key: saveRequest.key,
       value: saveRequest.value,
@@ -306,11 +370,12 @@ async function saveTranslationValue({
 
 async function loadTranslations(files: vscode.Uri[]): Promise<TranslationSnapshot> {
   const merged: TranslationsByLocale = {};
-  const sourceFiles: SourceFilesByLocale = {};
-  const localeToFile: LocaleToFileMap = {};
-  const keyToFile: KeyToFileMap = {};
+  const filePaths = files.map((uri) => uri.fsPath);
+  const sourceFileIds: SourceFileIdsByLocale = {};
+  const localeFileIds: LocaleToFileIdMap = {};
+  const keyFileIds: KeyToFileIdMap = {};
 
-  for (const uri of files) {
+  for (const [fileId, uri] of files.entries()) {
     const content = await readFileOrSkip(uri);
 
     if (content === undefined) {
@@ -332,49 +397,61 @@ async function loadTranslations(files: vscode.Uri[]): Promise<TranslationSnapsho
         merged[locale] = {};
       }
 
-      if (!sourceFiles[locale]) {
-        sourceFiles[locale] = {};
+      if (!sourceFileIds[locale]) {
+        sourceFileIds[locale] = {};
       }
 
       for (const [key, value] of Object.entries(keys)) {
         if (typeof value === 'string') {
           merged[locale][key] = value;
-          sourceFiles[locale][key] = uri.fsPath;
-          localeToFile[locale] = uri.fsPath;
-          keyToFile[key] = uri.fsPath;
+          sourceFileIds[locale][key] = fileId;
+          localeFileIds[locale] = fileId;
+          keyFileIds[key] = fileId;
         }
       }
     }
   }
 
-  return { merged, sourceFiles, localeToFile, keyToFile };
+  return { merged, files: filePaths, sourceFileIds, localeFileIds, keyFileIds };
 }
 
-function resolveSourceFile(
+function resolveSourceFileId(
   snapshot: TranslationSnapshot,
   locale: string,
   key: string,
-): string | undefined {
+): FileId | undefined {
   return (
-    snapshot.sourceFiles[locale]?.[key] ??
-    snapshot.localeToFile[locale] ??
-    snapshot.keyToFile[key]
+    snapshot.sourceFileIds[locale]?.[key] ??
+    snapshot.localeFileIds[locale] ??
+    snapshot.keyFileIds[key]
   );
 }
 
-function setSourceFile(
+function setSourceFileId(
   snapshot: TranslationSnapshot,
   locale: string,
   key: string,
-  filePath: string,
+  fileId: FileId,
 ): void {
-  if (!snapshot.sourceFiles[locale]) {
-    snapshot.sourceFiles[locale] = {};
+  if (!snapshot.sourceFileIds[locale]) {
+    snapshot.sourceFileIds[locale] = {};
   }
 
-  snapshot.sourceFiles[locale][key] = filePath;
-  snapshot.localeToFile[locale] = filePath;
-  snapshot.keyToFile[key] = filePath;
+  snapshot.sourceFileIds[locale][key] = fileId;
+  snapshot.localeFileIds[locale] = fileId;
+  snapshot.keyFileIds[key] = fileId;
+}
+
+function countKeys(translations: TranslationsByLocale): number {
+  const keys = new Set<string>();
+
+  for (const localeTranslations of Object.values(translations)) {
+    for (const key of Object.keys(localeTranslations)) {
+      keys.add(key);
+    }
+  }
+
+  return keys.size;
 }
 
 function createSaveQueue(): SaveOperationQueue {
@@ -446,6 +523,9 @@ async function getWebviewHtml(
 ): Promise<string> {
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, 'style.css'));
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewRoot, 'script.js'));
+  const logoUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(webviewRoot, 'search-funnel-logo.png'),
+  );
   const nonce = createNonce();
 
   let html = await readTranslationFile(vscode.Uri.joinPath(webviewRoot, 'index.html'));
@@ -453,6 +533,7 @@ async function getWebviewHtml(
   html = html
     .replace(/\{\{CSP_SOURCE\}\}/g, webview.cspSource)
     .replace(/\{\{NONCE\}\}/g, nonce)
+    .replace(/\{\{LOGO_URI\}\}/g, logoUri.toString())
     .replace(/\{\{STYLE_URI\}\}/g, styleUri.toString())
     .replace(/\{\{SCRIPT_URI\}\}/g, scriptUri.toString())
     .replace(/\{\{PANEL_TITLE\}\}/g, escapeHtml(DEFAULT_PANEL_TITLE));
@@ -492,6 +573,10 @@ function escapeHtml(value: string): string {
 
 function isString(value: unknown): value is string {
   return typeof value === 'string';
+}
+
+function isSafeFileId(value: unknown): value is FileId {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
