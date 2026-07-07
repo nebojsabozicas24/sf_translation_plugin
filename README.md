@@ -2,14 +2,14 @@
 
 VS Code extension for browsing and editing generated translation JSON files from one place.
 
-The extension scans the current workspace for translation files, merges all locale keys into a webview panel, and writes edited values back to the JSON file where the key was found.
+The extension scans the current workspace for translation files, merges all locale keys into a webview panel, and writes edited values back to the JSON file that owns the edited locale/key entry.
 
 ## Features
 
 - Opens a dedicated **SF Translations Manager** panel in VS Code.
 - Finds translation files with a configurable glob pattern.
 - Merges translations by locale and key.
-- Saves edited translation values back to the source JSON file.
+- Saves edited translation values back to the source JSON file for each locale/key cell.
 - Provides a shortcut command for opening the extension settings.
 
 ## Translation File Format
@@ -83,7 +83,7 @@ Example for a custom translations folder:
 
 ## How Saving Works
 
-When files are loaded, the extension tracks which JSON file each translation key came from. When a value is saved, it:
+When files are loaded, the extension tracks which JSON file each locale/key value came from. When a value is saved, it:
 
 1. Opens the original JSON file.
 2. Parses the file.
@@ -91,7 +91,7 @@ When files are loaded, the extension tracks which JSON file each translation key
 4. Updates `data[locale][key]`.
 5. Writes the file back as formatted JSON.
 
-If multiple files contain the same translation key, the last file found by sorted path order owns that key in the manager.
+If a locale/key value already exists in multiple files, the last file found by sorted path order owns that exact cell in the manager. For a missing value, the manager saves to the known file for that locale first, then falls back to the known file for that key.
 
 ## Expected Extension Assets
 

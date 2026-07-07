@@ -3,11 +3,17 @@ import * as vscode from 'vscode';
 
 type TranslationsByLocale = Record<string, Record<string, string>>;
 type KeyToFileMap = Record<string, string>;
+type LocaleToFileMap = Record<string, string>;
+type SourceFilesByLocale = Record<string, Record<string, string>>;
 
 interface TranslationSnapshot {
   merged: TranslationsByLocale;
+  sourceFiles: SourceFilesByLocale;
+  localeToFile: LocaleToFileMap;
   keyToFile: KeyToFileMap;
 }
+
+type SaveOperationQueue = (operation: () => Promise<void>) => Promise<void>;
 
 type WebviewMessage =
   | { type: 'ready' }
@@ -84,7 +90,10 @@ async function openTranslationPanel(
     },
   );
 
-  let snapshot = await loadTranslations(files);
+  const snapshot = await loadTranslations(files);
+  const validFilePaths = new Set(files.map((uri) => uri.fsPath));
+  const enqueueSave = createSaveQueue();
+  let didSendContent = false;
   let didReportPostMessageFailure = false;
 
   const reportPostMessageFailure = (error: unknown): void => {
@@ -104,10 +113,16 @@ async function openTranslationPanel(
   };
 
   const sendContent = async (): Promise<void> => {
+    if (didSendContent) {
+      return;
+    }
+
     try {
       const sent = await panel.webview.postMessage({
         type: 'content',
         merged: snapshot.merged,
+        sourceFiles: snapshot.sourceFiles,
+        localeToFile: snapshot.localeToFile,
         keyToFile: snapshot.keyToFile,
       });
 
@@ -126,8 +141,11 @@ async function openTranslationPanel(
         }
       } catch (fallbackError) {
         reportPostMessageFailure(fallbackError || error);
+        return;
       }
     }
+
+    didSendContent = true;
   };
 
   panel.webview.onDidReceiveMessage(
@@ -138,7 +156,13 @@ async function openTranslationPanel(
           break;
 
         case 'save':
-          await handleSaveMessage(message, panel.webview, snapshot);
+          await handleSaveMessage(
+            message,
+            panel.webview,
+            snapshot,
+            validFilePaths,
+            enqueueSave,
+          );
           break;
 
         case 'openSettings':
@@ -151,16 +175,14 @@ async function openTranslationPanel(
   );
 
   panel.webview.html = await getWebviewHtml(panel.webview, webviewRoot);
-
-  setTimeout(() => void sendContent(), 100);
-  setTimeout(() => void sendContent(), 800);
-  setTimeout(() => void sendContent(), 2000);
 }
 
 async function handleSaveMessage(
   message: Extract<WebviewMessage, { type: 'save' }>,
   webview: vscode.Webview,
   snapshot: TranslationSnapshot,
+  validFilePaths: ReadonlySet<string>,
+  enqueueSave: SaveOperationQueue,
 ): Promise<void> {
   if (
     !isString(message.filePath) ||
@@ -176,28 +198,62 @@ async function handleSaveMessage(
     return;
   }
 
-  try {
-    await saveTranslationValue({
-      filePath: message.filePath,
-      locale: message.locale,
-      key: message.key,
-      value: message.value,
-    });
+  const saveRequest = {
+    filePath: message.filePath,
+    locale: message.locale,
+    key: message.key,
+    value: message.value,
+  };
 
-    if (!snapshot.merged[message.locale]) {
-      snapshot.merged[message.locale] = {};
+  const sourceFile = resolveSourceFile(
+    snapshot,
+    saveRequest.locale,
+    saveRequest.key,
+  );
+
+  if (!sourceFile) {
+    await postSaveError(
+      webview,
+      message.requestId,
+      `No source file found for ${saveRequest.locale}: ${saveRequest.key}.`,
+    );
+    return;
+  }
+
+  if (saveRequest.filePath !== sourceFile || !validFilePaths.has(sourceFile)) {
+    await postSaveError(
+      webview,
+      message.requestId,
+      'Invalid source file for this translation.',
+    );
+    return;
+  }
+
+  try {
+    await enqueueSave(() =>
+      saveTranslationValue({
+        filePath: sourceFile,
+        locale: saveRequest.locale,
+        key: saveRequest.key,
+        value: saveRequest.value,
+      }),
+    );
+
+    setSourceFile(snapshot, saveRequest.locale, saveRequest.key, sourceFile);
+
+    if (!snapshot.merged[saveRequest.locale]) {
+      snapshot.merged[saveRequest.locale] = {};
     }
 
-    snapshot.merged[message.locale][message.key] = message.value;
-    snapshot.keyToFile[message.key] = message.filePath;
+    snapshot.merged[saveRequest.locale][saveRequest.key] = saveRequest.value;
 
     await webview.postMessage({
       type: 'saved',
       requestId: message.requestId,
-      filePath: message.filePath,
-      locale: message.locale,
-      key: message.key,
-      value: message.value,
+      filePath: sourceFile,
+      locale: saveRequest.locale,
+      key: saveRequest.key,
+      value: saveRequest.value,
     });
   } catch (error) {
     const messageText =
@@ -250,6 +306,8 @@ async function saveTranslationValue({
 
 async function loadTranslations(files: vscode.Uri[]): Promise<TranslationSnapshot> {
   const merged: TranslationsByLocale = {};
+  const sourceFiles: SourceFilesByLocale = {};
+  const localeToFile: LocaleToFileMap = {};
   const keyToFile: KeyToFileMap = {};
 
   for (const uri of files) {
@@ -274,16 +332,59 @@ async function loadTranslations(files: vscode.Uri[]): Promise<TranslationSnapsho
         merged[locale] = {};
       }
 
+      if (!sourceFiles[locale]) {
+        sourceFiles[locale] = {};
+      }
+
       for (const [key, value] of Object.entries(keys)) {
         if (typeof value === 'string') {
           merged[locale][key] = value;
+          sourceFiles[locale][key] = uri.fsPath;
+          localeToFile[locale] = uri.fsPath;
           keyToFile[key] = uri.fsPath;
         }
       }
     }
   }
 
-  return { merged, keyToFile };
+  return { merged, sourceFiles, localeToFile, keyToFile };
+}
+
+function resolveSourceFile(
+  snapshot: TranslationSnapshot,
+  locale: string,
+  key: string,
+): string | undefined {
+  return (
+    snapshot.sourceFiles[locale]?.[key] ??
+    snapshot.localeToFile[locale] ??
+    snapshot.keyToFile[key]
+  );
+}
+
+function setSourceFile(
+  snapshot: TranslationSnapshot,
+  locale: string,
+  key: string,
+  filePath: string,
+): void {
+  if (!snapshot.sourceFiles[locale]) {
+    snapshot.sourceFiles[locale] = {};
+  }
+
+  snapshot.sourceFiles[locale][key] = filePath;
+  snapshot.localeToFile[locale] = filePath;
+  snapshot.keyToFile[key] = filePath;
+}
+
+function createSaveQueue(): SaveOperationQueue {
+  let queue: Promise<unknown> = Promise.resolve();
+
+  return (operation) => {
+    const run = queue.then(operation, operation);
+    queue = run.catch(() => undefined);
+    return run;
+  };
 }
 
 async function readFileOrSkip(uri: vscode.Uri): Promise<string | undefined> {

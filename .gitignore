@@ -4,6 +4,7 @@ node_modules/
 # Build output
 build/
 coverage/
+*.vsix
 
 # Logs
 *.log
@@ -35,6 +36,8 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 *.swp
 *.swo

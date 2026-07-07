@@ -3,11 +3,14 @@
 
   const state = {
     merged: {},
+    sourceFiles: {},
+    localeToFile: {},
     keyToFile: {},
     locales: [],
     keys: [],
     dirty: new Map(),
     pending: new Map(),
+    hasContent: false,
   };
 
   const searchInput = document.getElementById('searchInput');
@@ -50,15 +53,27 @@
   });
 
   function applyContentMessage(message) {
+    if (state.hasContent && (state.dirty.size > 0 || state.pending.size > 0)) {
+      return;
+    }
+
     const payload =
       typeof message.data === 'string'
-        ? parseJson(message.data, { merged: {}, keyToFile: {} })
+        ? parseJson(message.data, {
+            merged: {},
+            sourceFiles: {},
+            localeToFile: {},
+            keyToFile: {},
+          })
         : message;
 
     state.merged = isObject(payload.merged) ? payload.merged : {};
+    state.sourceFiles = isObject(payload.sourceFiles) ? payload.sourceFiles : {};
+    state.localeToFile = isObject(payload.localeToFile) ? payload.localeToFile : {};
     state.keyToFile = isObject(payload.keyToFile) ? payload.keyToFile : {};
     state.dirty.clear();
     state.pending.clear();
+    state.hasContent = true;
 
     rebuildIndex();
     renderTable();
@@ -80,6 +95,7 @@
     }
 
     state.merged[pending.locale][pending.key] = pending.value;
+    setSourceFile(pending.locale, pending.key, pending.filePath);
     state.keyToFile[pending.key] = pending.filePath;
 
     const dirty = state.dirty.get(pending.id);
@@ -145,7 +161,7 @@
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
     headerRow.appendChild(createHeaderCell('Key', 'keyColumn'));
-    headerRow.appendChild(createHeaderCell('File', 'fileColumn'));
+    headerRow.appendChild(createHeaderCell('Files', 'fileColumn'));
 
     for (const locale of state.locales) {
       headerRow.appendChild(createHeaderCell(locale, 'localeColumn'));
@@ -158,13 +174,15 @@
 
     for (const key of visibleKeys) {
       const row = document.createElement('tr');
-      const filePath = state.keyToFile[key] || '';
+      const filePaths = getSourceFilesForKey(key);
 
       row.appendChild(createTextCell(key, 'keyCell', key));
-      row.appendChild(createTextCell(basename(filePath), 'fileCell', filePath));
+      row.appendChild(
+        createTextCell(formatFileNames(filePaths), 'fileCell', filePaths.join('\n')),
+      );
 
       for (const locale of state.locales) {
-        row.appendChild(createTranslationCell(locale, key, filePath));
+        row.appendChild(createTranslationCell(locale, key));
       }
 
       tbody.appendChild(row);
@@ -190,10 +208,11 @@
     return cell;
   }
 
-  function createTranslationCell(locale, key, filePath) {
+  function createTranslationCell(locale, key) {
     const cell = document.createElement('td');
     const id = cellId(locale, key);
     const originalValue = getTranslationValue(locale, key);
+    const filePath = getSourceFile(locale, key);
     const dirty = state.dirty.get(id);
 
     const textarea = document.createElement('textarea');
@@ -329,6 +348,48 @@
     return typeof value === 'string' ? value : '';
   }
 
+  function getSourceFilesForKey(key) {
+    const filePaths = new Set();
+
+    for (const locale of state.locales) {
+      const filePath = getSourceFile(locale, key);
+
+      if (filePath) {
+        filePaths.add(filePath);
+      }
+    }
+
+    return Array.from(filePaths);
+  }
+
+  function getSourceFile(locale, key) {
+    const localeSources = state.sourceFiles[locale];
+
+    if (isObject(localeSources) && typeof localeSources[key] === 'string') {
+      return localeSources[key];
+    }
+
+    if (typeof state.localeToFile[locale] === 'string') {
+      return state.localeToFile[locale];
+    }
+
+    if (typeof state.keyToFile[key] === 'string') {
+      return state.keyToFile[key];
+    }
+
+    return '';
+  }
+
+  function setSourceFile(locale, key, filePath) {
+    if (!isObject(state.sourceFiles[locale])) {
+      state.sourceFiles[locale] = {};
+    }
+
+    state.sourceFiles[locale][key] = filePath;
+    state.localeToFile[locale] = filePath;
+    state.keyToFile[key] = filePath;
+  }
+
   function cellId(locale, key) {
     return `${locale}\u0000${key}`;
   }
@@ -339,6 +400,14 @@
     }
 
     return filePath.split(/[\\/]/).pop() || filePath;
+  }
+
+  function formatFileNames(filePaths) {
+    if (filePaths.length === 0) {
+      return '-';
+    }
+
+    return filePaths.map((filePath) => basename(filePath)).join(', ');
   }
 
   function parseJson(value, fallback) {

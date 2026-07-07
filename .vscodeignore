@@ -1,6 +1,0 @@
-node_modules/
-src/
-*.ts
-tsconfig.json
-.gitignore
-.DS_Store

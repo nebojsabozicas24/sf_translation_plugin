@@ -38,7 +38,10 @@ async function openTranslationPanel(context, files) {
         retainContextWhenHidden: true,
         localResourceRoots: [webviewRoot],
     });
-    let snapshot = await loadTranslations(files);
+    const snapshot = await loadTranslations(files);
+    const validFilePaths = new Set(files.map((uri) => uri.fsPath));
+    const enqueueSave = createSaveQueue();
+    let didSendContent = false;
     let didReportPostMessageFailure = false;
     const reportPostMessageFailure = (error) => {
         console.error('SF Translations Manager: failed to send content to webview.', error);
@@ -49,10 +52,15 @@ async function openTranslationPanel(context, files) {
         vscode.window.showErrorMessage('Failed to send translations to the webview. The payload may be too large.');
     };
     const sendContent = async () => {
+        if (didSendContent) {
+            return;
+        }
         try {
             const sent = await panel.webview.postMessage({
                 type: 'content',
                 merged: snapshot.merged,
+                sourceFiles: snapshot.sourceFiles,
+                localeToFile: snapshot.localeToFile,
                 keyToFile: snapshot.keyToFile,
             });
             if (!sent) {
@@ -71,8 +79,10 @@ async function openTranslationPanel(context, files) {
             }
             catch (fallbackError) {
                 reportPostMessageFailure(fallbackError || error);
+                return;
             }
         }
+        didSendContent = true;
     };
     panel.webview.onDidReceiveMessage(async (message) => {
         switch (message.type) {
@@ -80,7 +90,7 @@ async function openTranslationPanel(context, files) {
                 void sendContent();
                 break;
             case 'save':
-                await handleSaveMessage(message, panel.webview, snapshot);
+                await handleSaveMessage(message, panel.webview, snapshot, validFilePaths, enqueueSave);
                 break;
             case 'openSettings':
                 void openExtensionSettings();
@@ -88,11 +98,8 @@ async function openTranslationPanel(context, files) {
         }
     }, undefined, context.subscriptions);
     panel.webview.html = await getWebviewHtml(panel.webview, webviewRoot);
-    setTimeout(() => void sendContent(), 100);
-    setTimeout(() => void sendContent(), 800);
-    setTimeout(() => void sendContent(), 2000);
 }
-async function handleSaveMessage(message, webview, snapshot) {
+async function handleSaveMessage(message, webview, snapshot, validFilePaths, enqueueSave) {
     if (!isString(message.filePath) ||
         !isString(message.locale) ||
         !isString(message.key) ||
@@ -100,25 +107,40 @@ async function handleSaveMessage(message, webview, snapshot) {
         await postSaveError(webview, message.requestId, 'Invalid save request from the translations webview.');
         return;
     }
+    const saveRequest = {
+        filePath: message.filePath,
+        locale: message.locale,
+        key: message.key,
+        value: message.value,
+    };
+    const sourceFile = resolveSourceFile(snapshot, saveRequest.locale, saveRequest.key);
+    if (!sourceFile) {
+        await postSaveError(webview, message.requestId, `No source file found for ${saveRequest.locale}: ${saveRequest.key}.`);
+        return;
+    }
+    if (saveRequest.filePath !== sourceFile || !validFilePaths.has(sourceFile)) {
+        await postSaveError(webview, message.requestId, 'Invalid source file for this translation.');
+        return;
+    }
     try {
-        await saveTranslationValue({
-            filePath: message.filePath,
-            locale: message.locale,
-            key: message.key,
-            value: message.value,
-        });
-        if (!snapshot.merged[message.locale]) {
-            snapshot.merged[message.locale] = {};
+        await enqueueSave(() => saveTranslationValue({
+            filePath: sourceFile,
+            locale: saveRequest.locale,
+            key: saveRequest.key,
+            value: saveRequest.value,
+        }));
+        setSourceFile(snapshot, saveRequest.locale, saveRequest.key, sourceFile);
+        if (!snapshot.merged[saveRequest.locale]) {
+            snapshot.merged[saveRequest.locale] = {};
         }
-        snapshot.merged[message.locale][message.key] = message.value;
-        snapshot.keyToFile[message.key] = message.filePath;
+        snapshot.merged[saveRequest.locale][saveRequest.key] = saveRequest.value;
         await webview.postMessage({
             type: 'saved',
             requestId: message.requestId,
-            filePath: message.filePath,
-            locale: message.locale,
-            key: message.key,
-            value: message.value,
+            filePath: sourceFile,
+            locale: saveRequest.locale,
+            key: saveRequest.key,
+            value: saveRequest.value,
         });
     }
     catch (error) {
@@ -146,6 +168,8 @@ async function saveTranslationValue({ filePath, locale, key, value, }) {
 }
 async function loadTranslations(files) {
     const merged = {};
+    const sourceFiles = {};
+    const localeToFile = {};
     const keyToFile = {};
     for (const uri of files) {
         const content = await readFileOrSkip(uri);
@@ -163,15 +187,41 @@ async function loadTranslations(files) {
             if (!merged[locale]) {
                 merged[locale] = {};
             }
+            if (!sourceFiles[locale]) {
+                sourceFiles[locale] = {};
+            }
             for (const [key, value] of Object.entries(keys)) {
                 if (typeof value === 'string') {
                     merged[locale][key] = value;
+                    sourceFiles[locale][key] = uri.fsPath;
+                    localeToFile[locale] = uri.fsPath;
                     keyToFile[key] = uri.fsPath;
                 }
             }
         }
     }
-    return { merged, keyToFile };
+    return { merged, sourceFiles, localeToFile, keyToFile };
+}
+function resolveSourceFile(snapshot, locale, key) {
+    return (snapshot.sourceFiles[locale]?.[key] ??
+        snapshot.localeToFile[locale] ??
+        snapshot.keyToFile[key]);
+}
+function setSourceFile(snapshot, locale, key, filePath) {
+    if (!snapshot.sourceFiles[locale]) {
+        snapshot.sourceFiles[locale] = {};
+    }
+    snapshot.sourceFiles[locale][key] = filePath;
+    snapshot.localeToFile[locale] = filePath;
+    snapshot.keyToFile[key] = filePath;
+}
+function createSaveQueue() {
+    let queue = Promise.resolve();
+    return (operation) => {
+        const run = queue.then(operation, operation);
+        queue = run.catch(() => undefined);
+        return run;
+    };
 }
 async function readFileOrSkip(uri) {
     try {
