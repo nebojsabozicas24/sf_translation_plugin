@@ -143,10 +143,13 @@ If this metadata is missing, the fallback title is `SF Translations Manager`.
 
 ## Development
 
-The extension source lives in:
+The extension backend source is split by responsibility:
 
 ```text
-src/extension.ts
+src/extension.ts                  VS Code activation and command wiring
+src/domain/                       pure translation model and JSON operations
+src/application/                  load/save use cases and save queue
+src/infrastructure/vscode/        VS Code workspace, webview, and settings adapters
 webview/index.html
 webview/script.js
 webview/style.css
@@ -162,6 +165,12 @@ Compile the extension with:
 
 ```sh
 npm run compile
+```
+
+Run the unit tests with:
+
+```sh
+npm test
 ```
 
 The compiled extension entrypoint is generated in:
