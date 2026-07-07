@@ -10,7 +10,10 @@ The extension scans the current workspace for translation files, merges all loca
 - Finds translation files with a configurable glob pattern.
 - Merges translations by locale and key.
 - Displays dot-separated keys as a collapsible hierarchy.
-- Lets users temporarily choose which locale columns are visible.
+- Starts hierarchy rows collapsed and lets users expand/collapse groups by clicking the row.
+- Provides a **Collapse all** action.
+- Lets users temporarily choose which locale columns are visible from a checkbox dropdown.
+- Shows the source file names for a key on hover.
 - Virtualizes the table so large translation sets only render visible rows.
 - Saves edited translation values back to the source JSON file for each locale/key cell.
 - Provides a shortcut command for opening the extension settings.
@@ -82,8 +85,11 @@ Example for a custom translations folder:
 1. Open a workspace that contains translation JSON files.
 2. Run the command **SF Translations Manager: Open** from the Command Palette.
 3. If no files are found, run **SF Translations Manager: Open Settings** and adjust `sfTranslationsManager.translationsLocation`.
-4. Edit translation values in the panel.
-5. Save changes from the panel. The extension updates the matching JSON file and formats it with two-space indentation.
+4. Expand the key groups you want to inspect.
+5. Use the locale dropdown to show or hide locale columns for the current session.
+6. Hover a key to see the translation file names that contain values for that key.
+7. Edit translation values in the panel.
+8. Save changes from the panel. The extension updates the matching JSON file and formats it with two-space indentation.
 
 ## Commands
 
@@ -120,6 +126,8 @@ The runtime extension expects a `webview` directory inside the packaged extensio
 webview/index.html
 webview/script.js
 webview/style.css
+webview/search-funnel-logo.png
+webview/search-funnel-icon.png
 ```
 
 `index.html` may define the panel title with:
@@ -129,6 +137,9 @@ webview/style.css
 ```
 
 If this metadata is missing, the fallback title is `SF Translations Manager`.
+
+`webview/search-funnel-logo.png` is used inside the translations panel header.
+`webview/search-funnel-icon.png` is referenced from `package.json` as the official VS Code extension icon.
 
 ## Development
 
@@ -141,9 +152,15 @@ webview/script.js
 webview/style.css
 ```
 
+Install dependencies with:
+
+```sh
+npm install
+```
+
 Compile the extension with:
 
-```text
+```sh
 npm run compile
 ```
 
@@ -154,3 +171,47 @@ dist/extension.js
 ```
 
 The extension uses the VS Code API at runtime, so it must be run inside VS Code as an extension. The `vscode` module is provided by VS Code and is not installed as a normal runtime dependency.
+
+## Generate the Installation File
+
+VS Code extensions are installed from a `.vsix` file.
+
+From the repository root, install dependencies if they are not already installed:
+
+```sh
+npm install
+```
+
+Then compile the extension:
+
+```sh
+npm run compile
+```
+
+Then generate the VSIX package:
+
+```sh
+npx @vscode/vsce package
+```
+
+If `npx` asks to install `@vscode/vsce`, confirm it. The generated file is written to the repository root. Its name is based on the extension `name` and `version` from `package.json`. For the current `1.0.0` version, the file is:
+
+```text
+sf-translations-manager-1.0.0.vsix
+```
+
+Install the generated file through VS Code:
+
+1. Open the Extensions view.
+2. Open the `...` menu.
+3. Choose **Install from VSIX...**.
+4. Select the generated `.vsix` file.
+5. Reload VS Code when prompted.
+
+You can also install it from the command line:
+
+```sh
+code --install-extension sf-translations-manager-1.0.0.vsix
+```
+
+Generated `.vsix` files are local build artifacts and are ignored by git through `*.vsix` in `.gitignore`.
